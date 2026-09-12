@@ -64,6 +64,14 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    # ccache：跨 run 复用目标文件。NOHASHDIR 忽略绝对路径，HARDLINK+NOCOMPRESS
+    # 让命中几乎是瞬时的（压缩缓存每次命中都要 zstd 解压，实测多花 ~80s）。
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_MAXSIZE: 4G
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_NOCOMPRESS: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +79,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
-              cpio kmod python3 xz-utils
+              cpio kmod python3 xz-utils ccache
 
       - name: Fetch AOSP 4.9 toolchain (设备内核就是用这个编的)
         run: |
@@ -94,6 +102,25 @@ jobs:
           mv kernel/.git kernel/.git-off
           (cd kernel && git status 2>&1 | head -1) || true
 
+      # 缓存键只绑 仓库+分支+配置：改 workflow 不会把缓存打掉
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-
+
+      - name: Setup ccache
+        run: |
+          ccache --version | head -1
+          mkdir -p ~/.ccache
+          ccache -M 4G
+          ccache -z
+          ccache -p | grep -E "cache_dir|max_size" || true
+
       - name: Configure
         run: |
           export PATH="$TOOLCHAIN:$PATH"
@@ -103,7 +130,7 @@ jobs:
             test -f "arch/arm64/configs/$DEFCONFIG" || {
               echo "!! 仓库里没有 arch/arm64/configs/$DEFCONFIG"; ls arch/arm64/configs; exit 1; }
             echo "用仓库自带 defconfig: $DEFCONFIG"
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+            make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
                  CROSS_COMPILE_ARM32=arm-linux-androideabi- "$DEFCONFIG"
           else
             echo "用提取的 config: ${{ inputs.config_file }}"
@@ -114,11 +141,11 @@ jobs:
           if [ -n "${{ inputs.extra_config }}" ]; then
             printf '\n%s\n' "${{ inputs.extra_config }}" >> .config
           fi
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION=|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES=|USB_CONFIGFS|F2FS_FS=|EROFS_FS)" .config || true
-          REL=$(make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- kernelrelease)
+          REL=$(make -s ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" kernelrelease)
           echo "kernelrelease = '$REL'（要编出不含 -g<sha> / 加号的干净版本串）"
           # 用提取出来的 config 时，顺手报告这棵树丢了多少符号
           if [ -n "${{ inputs.config_file }}" ] && [ -z "$DEFCONFIG" ]; then
@@ -135,7 +162,7 @@ jobs:
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
           echo "开始编译 $(date -u +%H:%M:%S)，$(nproc) 并发"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build-image.log"
           echo "编译结束 $(date -u +%H:%M:%S)"
@@ -149,13 +176,13 @@ jobs:
           cd kernel
           set +e
           echo "开始编模块 $(date -u +%H:%M:%S)"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                -j"$(nproc)" modules 2>&1 | tee "$GITHUB_WORKSPACE/build-modules.log"
           echo "modules build exit: $?"
           echo "模块编译结束 $(date -u +%H:%M:%S)"
           rm -rf "$GITHUB_WORKSPACE/inst"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst"
           mkdir -p "$GITHUB_WORKSPACE/mods/lib/modules"
@@ -224,3 +251,22 @@ jobs:
             build-image.log
             build-modules.log
           if-no-files-found: error
+
+      - name: ccache stats
+        if: always()
+        run: |
+          ccache -s || true
+          {
+            echo "## ccache 统计"
+            echo ""
+            echo '```'
+            ccache -s || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}

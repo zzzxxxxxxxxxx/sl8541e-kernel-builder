@@ -87,6 +87,8 @@ def main():
                     help="directory tree whose files replace/add ramdisk entries")
     ap.add_argument("--device-tree-size-field", action="store_true",
                     help="also write the dt size into the header (v0 dt_size)")
+    ap.add_argument("--cmdline", default=None,
+                    help="overwrite the cmdline field in the header (max 511 bytes)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -137,6 +139,12 @@ def main():
     struct.pack_into("<I", header, 0x10, len(ram_gz))
     if args.device_tree_size_field:
         struct.pack_into("<I", header, 0x28, len(dt))
+    if args.cmdline is not None:
+        cb = args.cmdline.encode()
+        if len(cb) > 511:
+            raise SystemExit("cmdline too long (%d bytes)" % len(cb))
+        header[0x40:0x240] = cb + b"\x00" * (512 - len(cb))
+        print("   cmdline: %s" % args.cmdline)
 
     out = bytearray()
     out += header

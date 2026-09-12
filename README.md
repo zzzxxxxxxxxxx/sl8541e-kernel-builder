@@ -1,8 +1,17 @@
 # sl8541e-kernel-builder
 
-给 **SL8541E / SC9832E（sharklE）** 手表编 4.4.83 内核，并直接产出可刷的
-`boot.img`。用的配置不是源码里的通用 defconfig，而是**从设备自己的
-`boot.img` 里提取出来的真实 config**（`scripts/extract-ikconfig` 等价做法）。
+给 **SL8541E / SC9832E（sharklE）** 手表编内核，并直接产出可刷的 `boot.img`。
+
+默认走 LineageOS 17.1 那套：
+
+| 项 | 值 |
+|---|---|
+| 内核仓库 | `zzzxxxxxxxxxx/android_kernel_sprd_sc9832e` |
+| 分支 | `lineage-17.1`（4.4.147，带 `arch/arm64/boot/dts/sprd/dw99.dts`） |
+| 配置 | 仓库自带 `arch/arm64/configs/lineageos_dw99_defconfig`（`CONFIG_BPF_SYSCALL=y`） |
+
+把 `defconfig` 留空则退回老路子：用**从设备自己的 `boot.img` 里提取出来的
+真实 4.4.83 config**（`configs/dw99-4.4.83.config`）。
 
 ## 产物
 
@@ -19,10 +28,14 @@ Actions → `kernel` → Run workflow。常用参数：
 
 | 输入 | 说明 |
 |---|---|
-| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/Linux-4.4.83` |
-| `kernel_branch` | 默认 `WIP` |
+| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/android_kernel_sprd_sc9832e` |
+| `kernel_branch` | 默认 `lineage-17.1` |
+| `defconfig` | 默认 `lineageos_dw99_defconfig`；留空 = 用 `configs/dw99-4.4.83.config` |
 | `extra_config` | 追加到 `.config` 的行，例如 `CONFIG_BPF_SYSCALL=y` |
 | `build_modules` | 是否编模块（失败不阻断） |
+| `dt_url` | 换 dt（留空 = `prebuilt/dt.bin`，即原厂那份） |
+| `ramdisk_url` | 换 ramdisk（留空 = `prebuilt/ramdisk.gz`，即原厂那份） |
+| `cmdline` | 覆盖 boot header 的 cmdline（留空 = 原厂 `console=ttyS1,115200n8 buildvariant=user`） |
 | `out_name` | 产物文件名 |
 
 ## 里面的文件

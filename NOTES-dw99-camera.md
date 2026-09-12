@@ -184,6 +184,37 @@ signal 11 (SIGSEGV), fault addr 0x0
 换句话说，ISP 往"自己的客户进程"的内存里写了东西——这跟前面观察到的
 "受害者都是刚启动、刚加载库的进程"是同一件事的两种表现。
 
+### 6.2 把原厂组件整套搬过来（改名 + patch）——结论：与库的代差无关
+
+按"把原厂 vendor 的组件搬过来、改个名、patch 掉引用"的思路补过一次：
+
+| 文件 | 处理 |
+|---|---|
+| `libsensorndkbridge.so`（原厂 121ad889） | 换掉底包那份，引用改名后的 HIDL |
+| `android.hardware.sensors@1.0.so`（原厂） | → `sensors8.so`（HAL 自己的 SONAME 也一起改） |
+| `android.frameworks.sensorservice@1.0.so`（原厂） | → `senssvc8.so`，其内部引用指向 `sensors8.so` |
+
+（改名用 `elf_rename_deps.py`，避免和 GSI 的 VNDK 版本在 vendor namespace 里撞车。）
+HAL 本身早就已经是改名版依赖了（`ui8`/`pm8`/`gui8`），所以这一步补的是
+sensor/gyro 那条支线。
+
+**结果**：provider 照样崩，但换了个位置——
+
+```
+signal 11, fault addr 0x0
+#00 pc 00000000  <unknown>
+#01 pc 00011e17  /vendor/lib/libcamoem.so (camera_isp_ioctl+802)
+```
+
+而底包那套是崩在 `libispalg.so ae_sprd_io_ctrl+1654`。**两套不同代的库，
+崩的是同一个模式（内部调用经 PLT/GOT 跳到 0），而且都发生在 init 阶段、
+还没出帧的时候。**
+
+这个对比说明：**GOT 被清 0 不是"库之间代差"造成的**，换库只会换个崩点。
+往 provider 的页里写 0 的东西在更底层（内核/驱动那一侧），跟 6.1 里
+"踩内存先踩 provider 自己"是同一条线索。
+"受害者都是刚启动、刚加载库的进程"是同一件事的两种表现。
+
 两处 libispalg 补丁（`libispalg_a9fix2.so`，md5 `da735787`）：
 
 | 地址 | 原 | 改 | 原因 |

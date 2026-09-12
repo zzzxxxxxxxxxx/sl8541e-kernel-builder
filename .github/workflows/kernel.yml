@@ -28,6 +28,10 @@ on:
         description: "内核仓库 arch/arm64/configs 下的 defconfig（留空 = 用 configs/dw99-4.4.83.config）"
         required: false
         default: ""
+      config_file:
+        description: "defconfig 留空时用哪份提取出来的 config"
+        required: false
+        default: "configs/dw99-4.4.83.config"
       extra_config:
         description: "追加到 .config 的内容（每行一条，可留空）"
         required: false
@@ -102,8 +106,10 @@ jobs:
             make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
                  CROSS_COMPILE_ARM32=arm-linux-androideabi- "$DEFCONFIG"
           else
-            echo "用设备提取的 config: configs/dw99-4.4.83.config"
-            cp "$GITHUB_WORKSPACE/configs/dw99-4.4.83.config" .config
+            echo "用提取的 config: ${{ inputs.config_file }}"
+            test -f "$GITHUB_WORKSPACE/${{ inputs.config_file }}" || {
+              echo "!! 没有 ${{ inputs.config_file }}"; ls "$GITHUB_WORKSPACE/configs"; exit 1; }
+            cp "$GITHUB_WORKSPACE/${{ inputs.config_file }}" .config
           fi
           if [ -n "${{ inputs.extra_config }}" ]; then
             printf '\n%s\n' "${{ inputs.extra_config }}" >> .config

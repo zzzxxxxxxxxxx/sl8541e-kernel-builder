@@ -2,16 +2,20 @@
 
 给 **SL8541E / SC9832E（sharklE）** 手表编内核，并直接产出可刷的 `boot.img`。
 
-默认走 LineageOS 17.1 那套：
+默认走"原厂 ABI"那套（这样原厂 ramdisk 里的模块 vermagic 能直接对上）：
 
 | 项 | 值 |
 |---|---|
-| 内核仓库 | `zzzxxxxxxxxxx/android_kernel_sprd_sc9832e` |
-| 分支 | `lineage-17.1`（4.4.147，带 `arch/arm64/boot/dts/sprd/dw99.dts`） |
-| 配置 | 仓库自带 `arch/arm64/configs/lineageos_dw99_defconfig`（`CONFIG_BPF_SYSCALL=y`） |
+| 内核仓库 | `zzzxxxxxxxxxx/Linux-4.4.83`（`sprd-linux/Linux-4.4.83` 的 fork） |
+| 分支 | `WIP` |
+| 配置 | `configs/dw99-4.4.83.config`，从设备 boot.img 里提取的原厂 config |
 
-把 `defconfig` 留空则退回老路子：用**从设备自己的 `boot.img` 里提取出来的
-真实 4.4.83 config**（`configs/dw99-4.4.83.config`）。
+想换 LineageOS 17.1 那套（4.4.147）：`kernel_repo=zzzxxxxxxxxxx/android_kernel_sprd_sc9832e`、
+`kernel_branch=lineage-17.1`、`defconfig=lineageos_dw99_defconfig`。
+
+克隆完会把 `kernel/.git` 挪成 `kernel/.git-off`：留着的话 `scripts/setlocalversion`
+会给版本串加上 `-g<sha>` 或 `+`（`CONFIG_LOCALVERSION_AUTO=y`），`UTS_RELEASE`
+就不是干净的 `4.4.83`，vermagic 和原厂模块对不上。
 
 ## 产物
 
@@ -28,9 +32,9 @@ Actions → `kernel` → Run workflow。常用参数：
 
 | 输入 | 说明 |
 |---|---|
-| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/android_kernel_sprd_sc9832e` |
-| `kernel_branch` | 默认 `lineage-17.1` |
-| `defconfig` | 默认 `lineageos_dw99_defconfig`；留空 = 用 `configs/dw99-4.4.83.config` |
+| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/Linux-4.4.83` |
+| `kernel_branch` | 默认 `WIP` |
+| `defconfig` | 留空 = 用 `configs/dw99-4.4.83.config`；也可填内核仓库里的 defconfig 名 |
 | `extra_config` | 追加到 `.config` 的行，例如 `CONFIG_BPF_SYSCALL=y` |
 | `build_modules` | 是否编模块（失败不阻断） |
 | `dt_url` | 换 dt（留空 = `prebuilt/dt.bin`，即原厂那份） |

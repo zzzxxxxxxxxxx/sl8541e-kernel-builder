@@ -3,10 +3,13 @@ name: kernel
 # 编 DW99（SL8541E / SC9832E）的内核，然后拿原厂 boot.img 的
 # header/ramdisk/dtb 重新打包成可刷的 boot.img。
 #
-# 默认走 LineageOS 17.1 那套：
-#   内核仓库 zzzxxxxxxxxxx/android_kernel_sprd_sc9832e @ lineage-17.1 (4.4.147)
-#   配置用仓库里的 arch/arm64/configs/lineageos_dw99_defconfig
-# 想回到"从设备 boot.img 提取的 4.4.83 config"，把 defconfig 留空即可。
+# 默认走"原厂 ABI"那条：
+#   内核仓库 zzzxxxxxxxxxx/Linux-4.4.83 @ WIP（sprd-linux/Linux-4.4.83 的 fork）
+#   配置用从设备 boot.img 里提取出来的 4.4.83 config（configs/dw99-4.4.83.config）
+#   这样 UTS_RELEASE 就是干净的 4.4.83，原厂 ramdisk 里 mali/sprdbt_tty/sprd_fm
+#   那几个 4.4.83 模块的 vermagic 能直接对上。
+# 想换 LineageOS 17.1 那套（4.4.147）就设 kernel_repo/android_kernel_sprd_sc9832e、
+# kernel_branch=lineage-17.1、defconfig=lineageos_dw99_defconfig。
 
 on:
   workflow_dispatch:
@@ -14,15 +17,15 @@ on:
       kernel_repo:
         description: "内核仓库 owner/repo"
         required: false
-        default: "zzzxxxxxxxxxx/android_kernel_sprd_sc9832e"
+        default: "zzzxxxxxxxxxx/Linux-4.4.83"
       kernel_branch:
         description: "分支"
         required: false
-        default: "lineage-17.1"
+        default: "WIP"
       defconfig:
         description: "内核仓库 arch/arm64/configs 下的 defconfig（留空 = 用 configs/dw99-4.4.83.config）"
         required: false
-        default: "lineageos_dw99_defconfig"
+        default: ""
       extra_config:
         description: "追加到 .config 的内容（每行一条，可留空）"
         required: false
@@ -79,6 +82,11 @@ jobs:
           git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
             "https://github.com/${{ inputs.kernel_repo }}.git" kernel
           du -sh kernel
+          # 把 .git 挪走：留着的话 scripts/setlocalversion 会给版本串加上 -g<sha>
+          # （这条 defconfig 的 CONFIG_LOCALVERSION_AUTO=y），UTS_RELEASE 就不是
+          # 干净的 4.4.83 了，vermagic 和原厂模块对不上。
+          mv kernel/.git kernel/.git-off
+          (cd kernel && git status 2>&1 | head -1) || true
 
       - name: Configure
         run: |
@@ -102,8 +110,8 @@ jobs:
                CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION=|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES=|USB_CONFIGFS|F2FS_FS=|EROFS_FS)" .config || true
-          grep -E "Linux/arm64" include/config/kernel.release 2>/dev/null || \
-            make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- kernelrelease
+          REL=$(make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- kernelrelease)
+          echo "kernelrelease = '$REL'（要编出不含 -g<sha> / 加号的干净版本串）"
 
       - name: Build Image
         run: |

@@ -53,6 +53,15 @@ pstore console 本来就是开的；`/sys/fs/pstore` 里看不到 `console-ramoo
 - 刷了这个 boot.img 会**丢掉 FolkPatch 的内核补丁**（root）。要 root 的话，
   刷完再用 FolkPatch 对新的 boot.img 打一次补丁。
 - 想换回原厂：`dd if=boot.img of=/dev/block/by-name/boot bs=4M`。
-- 用新 GCC 编 4.4 老内核常见 `multiple definition` 报错，workflow 里已经加了
-  `KCFLAGS=-fcommon`；如果还是过不去，换 AOSP 的
-  `aarch64-linux-android-4.9` 预编译工具链。
+## 工具链
+
+设备内核的版本串是：
+
+```
+Linux version 4.4.83 (powersys@X99-5)
+  (gcc version 4.9.x 20150123 (prerelease) (GCC) ) #1 SMP PREEMPT Sun May 5 11:13:00 CST 2024
+```
+
+也就是 **AOSP 的 `aarch64-linux-android-4.9`** 预编译工具链。workflow 直接用
+LineageOS 镜像的那两份（`aarch64` + `arm`，后者是因为 `CONFIG_COMPAT=y` 要编
+vdso32），不再用系统自带的 GCC 11 —— 那个编 4.4 老内核会一堆 `-Werror` 报错。

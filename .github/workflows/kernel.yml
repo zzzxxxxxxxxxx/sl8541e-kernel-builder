@@ -38,12 +38,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Install host tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-aarch64-linux-gnu bc bison flex \
-              libssl-dev libelf-dev cpio kmod python3 xz-utils
-          aarch64-linux-gnu-gcc --version | head -1
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
+              cpio kmod python3 xz-utils
+
+      - name: Fetch AOSP 4.9 toolchain (设备内核就是用这个编的)
+        run: |
+          git clone --depth 1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
+          git clone --depth 1 -b lineage-19.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
+          ./gcc64/bin/aarch64-linux-android-gcc --version | head -1
+          ./gcc32/bin/arm-linux-androideabi-gcc --version | head -1
+          echo "TOOLCHAIN=$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin" >> "$GITHUB_ENV"
 
       - name: Clone kernel
         run: |
@@ -53,34 +62,41 @@ jobs:
 
       - name: Configure
         run: |
+          export PATH="$TOOLCHAIN:$PATH"
           cd kernel
           cp "$GITHUB_WORKSPACE/configs/dw99-4.4.83.config" .config
           if [ -n "${{ inputs.extra_config }}" ]; then
             printf '\n%s\n' "${{ inputs.extra_config }}" >> .config
           fi
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig >/dev/null
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig >/dev/null
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES|USB_CONFIGFS|F2FS_FS)=" .config
           grep -E "Linux/arm64" include/config/kernel.release 2>/dev/null || \
-            make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- kernelrelease
+            make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- kernelrelease
 
       - name: Build Image
         run: |
+          export PATH="$TOOLCHAIN:$PATH"
           cd kernel
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-fcommon" -j"$(nproc)" Image 2>&1 | tail -25
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+               -j"$(nproc)" Image 2>&1 | tail -25
           ls -la arch/arm64/boot/Image
 
       - name: Build modules (best effort)
         if: inputs.build_modules == 'true'
         run: |
+          export PATH="$TOOLCHAIN:$PATH"
           cd kernel
           set +e
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-fcommon" -j"$(nproc)" modules 2>&1 | tail -25
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+               -j"$(nproc)" modules 2>&1 | tail -25
           echo "modules build exit: $?"
           rm -rf "$GITHUB_WORKSPACE/inst"
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
                modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst" >/dev/null 2>&1
           mkdir -p "$GITHUB_WORKSPACE/mods/lib/modules"
           for m in mali.ko sprdwl_ng.ko sprdbt_tty.ko sprd_fm.ko; do

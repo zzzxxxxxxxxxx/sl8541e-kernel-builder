@@ -120,6 +120,13 @@ jobs:
           grep -E "^CONFIG_(LOCALVERSION=|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES=|USB_CONFIGFS|F2FS_FS=|EROFS_FS)" .config || true
           REL=$(make -s ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- kernelrelease)
           echo "kernelrelease = '$REL'（要编出不含 -g<sha> / 加号的干净版本串）"
+          # 用提取出来的 config 时，顺手报告这棵树丢了多少符号
+          if [ -n "${{ inputs.config_file }}" ] && [ -z "$DEFCONFIG" ]; then
+            echo "::group::config 对比（这棵树 vs 输入 config）"
+            python3 "$GITHUB_WORKSPACE/scripts/config_diff.py" \
+              "$GITHUB_WORKSPACE/${{ inputs.config_file }}" .config || true
+            echo "::endgroup::"
+          fi
 
       - name: Build Image
         run: |
@@ -213,6 +220,7 @@ jobs:
           path: |
             ${{ inputs.out_name }}
             kernel/arch/arm64/boot/Image
+            kernel/.config
             build-image.log
             build-modules.log
           if-no-files-found: error

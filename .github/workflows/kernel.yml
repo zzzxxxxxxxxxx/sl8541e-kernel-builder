@@ -171,7 +171,8 @@ jobs:
                 --kernel kernel/arch/arm64/boot/Image
                 --ramdisk "$ramdisk"
                 --dt "$dt"
-                --device-tree-size-field)
+                --device-tree-size-field
+                --pad-to 36700160)   # boot 分区大小，和原厂镜像一样填零对齐
           if [ -n "$CMDLINE" ]; then
             args+=(--cmdline "$CMDLINE")
           fi

@@ -89,6 +89,8 @@ def main():
                     help="also write the dt size into the header (v0 dt_size)")
     ap.add_argument("--cmdline", default=None,
                     help="overwrite the cmdline field in the header (max 511 bytes)")
+    ap.add_argument("--pad-to", type=int, default=0,
+                    help="zero-pad the output to this size (use the partition size)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -154,6 +156,12 @@ def main():
     out += b"\x00" * (align(len(out), page) - len(out))
     out += dt
     out += b"\x00" * (align(len(out), page) - len(out))
+
+    if args.pad_to:
+        if args.pad_to < len(out):
+            raise SystemExit("--pad-to %d is smaller than the image (%d)"
+                             % (args.pad_to, len(out)))
+        out += b"\x00" * (args.pad_to - len(out))
 
     open(args.out, "wb").write(out)
     print("wrote %s: %d bytes (kernel %d, ramdisk %d, dt %d)"

@@ -6,8 +6,8 @@
 
 | 项 | 值 |
 |---|---|
-| 内核仓库 | `zzzxxxxxxxxxx/Linux-4.4.83`（`sprd-linux/Linux-4.4.83` 的 fork） |
-| 分支 | `WIP` |
+| 内核仓库 | `zzzxxxxxxxxxx/android_kernel_sprd_sl8541e_4.4.83`（`sprd-linux/Linux-4.4.83` 的 fork） |
+|  分支 | `WIP` |
 | 配置 | `configs/dw99-4.4.83.config`，从设备 boot.img 里提取的原厂 config |
 
 想换 LineageOS 17.1 那套（4.4.147）：`kernel_repo=zzzxxxxxxxxxx/android_kernel_sprd_sc9832e`、
@@ -32,7 +32,7 @@ Actions → `kernel` → Run workflow。常用参数：
 
 | 输入 | 说明 |
 |---|---|
-| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/Linux-4.4.83` |
+| `kernel_repo` | 内核仓库，默认 `zzzxxxxxxxxxx/android_kernel_sprd_sl8541e_4.4.83` |
 | `kernel_branch` | 默认 `WIP` |
 | `defconfig` | 留空 = 用 `configs/dw99-4.4.83.config`；也可填内核仓库里的 defconfig 名 |
 | `extra_config` | 追加到 `.config` 的行，例如 `CONFIG_BPF_SYSCALL=y` |

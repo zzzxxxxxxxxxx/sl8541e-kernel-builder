@@ -4,7 +4,9 @@ name: kernel
 # header/ramdisk/dtb 重新打包成可刷的 boot.img。
 #
 # 默认走"原厂 ABI"那条：
-#   内核仓库 zzzxxxxxxxxxx/Linux-4.4.83 @ WIP（sprd-linux/Linux-4.4.83 的 fork）
+#   内核仓库 zzzxxxxxxxxxx/android_kernel_sprd_sl8541e_4.4.83 @ main
+#   （sprd-linux/Linux-4.4.83 的 fork；里面已经带了 "ignore module version
+#    checks" 的 patch，module.c 里强制 MODULE_INIT_IGNORE_VERMAGIC|MODVERSIONS）
 #   配置用从设备 boot.img 里提取出来的 4.4.83 config（configs/dw99-4.4.83.config）
 #   这样 UTS_RELEASE 就是干净的 4.4.83，原厂 ramdisk 里 mali/sprdbt_tty/sprd_fm
 #   那几个 4.4.83 模块的 vermagic 能直接对上。
@@ -17,11 +19,11 @@ on:
       kernel_repo:
         description: "内核仓库 owner/repo"
         required: false
-        default: "zzzxxxxxxxxxx/Linux-4.4.83"
+        default: "zzzxxxxxxxxxx/android_kernel_sprd_sl8541e_4.4.83"
       kernel_branch:
         description: "分支"
         required: false
-        default: "WIP"
+        default: "main"
       defconfig:
         description: "内核仓库 arch/arm64/configs 下的 defconfig（留空 = 用 configs/dw99-4.4.83.config）"
         required: false

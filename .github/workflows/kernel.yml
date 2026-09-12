@@ -72,6 +72,11 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
       CCACHE_NOCOMPRESS: "true"
+      # 内核构建每次都会重新生成 include/generated/* 和 .config 派生的头，
+      # mtime / ctime 一变 direct mode 的 manifest 就整体失效（实测命中率 1%）。
+      CCACHE_SLOPPINESS: "time_macros,include_file_mtime,include_file_ctime,file_stat_matches"
+      # 别用 mtime 给编译器做指纹：toolchain 每次是新 clone 的
+      CCACHE_COMPILERCHECK: "content"
     steps:
       - uses: actions/checkout@v4
 

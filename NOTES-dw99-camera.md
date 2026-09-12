@@ -119,3 +119,53 @@ include_file_ctime,file_stat_matches` + `CCACHE_COMPILERCHECK=content`）：
    知道 capability 结构的期望大小（A9 库返回的比 libcamdrv 的栈缓冲大）。
 3. 想要"立刻可用"的相机：刷原厂 8.1 的 `vendor.img`（`DW99_20240716`）配
    LOS 17.1 GSI——那边整套是自洽的。
+
+## 6. r2 反编译的成果（底包那套继续往下修）
+
+底包那套的三处崩点里，前两处是改 libispalg 的字节，第三处是**用 r2 反编译
+`libcamdrv.so` 找到并修掉的**：
+
+`isp_alg_fw_capability()`（0x16e14，204 字节，有符号）反编译后是这样：
+
+```c
+uint isp_alg_fw_capability(ctx, which, out)
+{
+	uint slot = 0;                       /* 4 字节栈槽 */
+	...
+	slot = (*ops->capability)(ctx->dev, cmd /*0x32/0x35/0x2c*/, 0, &slot);
+	*out = slot;
+}
+```
+
+它把一个**只有 4 字节的栈槽**当作输出缓冲交给算法库的能力查询函数，而 A9 那版
+算法库往这个指针里写的内容超过 4 字节，紧跟其后的**栈 canary 就被盖掉**，
+函数返回时 `__stack_chk_fail` → `stack corruption detected (-fstack-protector)`。
+同一个 libcamdrv（8.1 栈用的是同一个文件，md5 `71fbae43`）在 8.1 算法库上不炸，
+因为 8.1 库只写指针大小——这是又一处"A9 算法库 vs 其它组件"的代差。
+
+补丁（5 条指令，`libcamdrv_capfix.so`，md5 `a05edd94`）：
+
+| 地址 | 原 | 改 |
+|---|---|---|
+| 0x16e16 | `sub sp, 0x10` (`84b0`) | `sub sp, 0x40` (`90b0`) |
+| 0x16e40 / 0x16e52 / 0x16e64 | `add r3, sp, 8` (`02ab`) | `add r3, sp, 0x20` (`08ab`) |
+| 0x16e72 | `ldr r0, [sp, 8]` (`0298`) | `ldr r0, [sp, 0x20]` (`0898`) |
+
+（用 `rasm2 -a arm -b 16 "add r3, sp, 0x20"` 取编码，`r2 -w -c 's <addr>; wx <bytes>'` 写入。）
+
+打完这处之后 `isp_alg_fw_capability` 不再崩，provider 继续往下走，露出下一个
+崩点：**HAL 自己的陀螺仪线程** `sprdcamera::SprdCamera3OEMIf::gyro_ASensorManager_process`
+里 NULL 解引用（fault addr 0x0）——那条路径走 `libsensorndkbridge.so`，
+而 8.1 版那个库需要一整套 8.1 sensor HAL（`android.hardware.sensors@1.0.so`、
+`libsensorservice.so`、`sensorcalibration.so`、`libsensor.so`…），VNDK28 底包里都没有。
+
+配合前面那两处 libispalg 的补丁，底包相机栈现在的进度是：
+**AWB 初始化 → AE 初始化（表大小 10000→8212）→ capability 查询（栈溢出）全部通过**，
+卡在 HAL 的 sensor 桥调用上。每一步都是"这套库跟这个 ROM 不是一代的"的同一种病。
+
+两处 libispalg 补丁（`libispalg_a9fix2.so`，md5 `da735787`）：
+
+| 地址 | 原 | 改 | 原因 |
+|---|---|---|---|
+| 0x17638 | `ldr r2,[r0]` (`0268`) | `movs r2,#0` (`0022`) | adapter 返回成功但 ops 为 NULL，原版直接解引用 |
+| 0x2a3a6 | `movw r2,#0x2710` (`42f21072`) | `movw r2,#0x2014` (`42f21402`) | 要拷 10000 字节，源缓冲区只有 8704（scudo 保护页就在后面） |

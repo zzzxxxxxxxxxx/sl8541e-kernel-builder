@@ -69,7 +69,7 @@ jobs:
             printf '\n%s\n' "${{ inputs.extra_config }}" >> .config
           fi
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig >/dev/null
+               CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES|USB_CONFIGFS|F2FS_FS)=" .config
           grep -E "Linux/arm64" include/config/kernel.release 2>/dev/null || \
@@ -77,11 +77,15 @@ jobs:
 
       - name: Build Image
         run: |
+          # 输出实时滚动（tee 一边打进日志一边存文件），别再用 tail 缓冲
+          set -o pipefail
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
+          echo "开始编译 $(date -u +%H:%M:%S)，$(nproc) 并发"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-               -j"$(nproc)" Image 2>&1 | tail -25
+               -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build-image.log"
+          echo "编译结束 $(date -u +%H:%M:%S)"
           ls -la arch/arm64/boot/Image
 
       - name: Build modules (best effort)
@@ -90,14 +94,16 @@ jobs:
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
           set +e
+          echo "开始编模块 $(date -u +%H:%M:%S)"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-               -j"$(nproc)" modules 2>&1 | tail -25
+               -j"$(nproc)" modules 2>&1 | tee "$GITHUB_WORKSPACE/build-modules.log"
           echo "modules build exit: $?"
+          echo "模块编译结束 $(date -u +%H:%M:%S)"
           rm -rf "$GITHUB_WORKSPACE/inst"
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
                CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-               modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst" >/dev/null 2>&1
+               modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst"
           mkdir -p "$GITHUB_WORKSPACE/mods/lib/modules"
           for m in mali.ko sprdwl_ng.ko sprdbt_tty.ko sprd_fm.ko; do
             f="$(find "$GITHUB_WORKSPACE/inst" -name "$m" 2>/dev/null | head -1)"
@@ -132,4 +138,6 @@ jobs:
           path: |
             ${{ inputs.out_name }}
             kernel/arch/arm64/boot/Image
+            build-image.log
+            build-modules.log
           if-no-files-found: error

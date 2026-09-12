@@ -163,6 +163,27 @@ uint isp_alg_fw_capability(ctx, which, out)
 **AWB 初始化 → AE 初始化（表大小 10000→8212）→ capability 查询（栈溢出）全部通过**，
 卡在 HAL 的 sensor 桥调用上。每一步都是"这套库跟这个 ROM 不是一代的"的同一种病。
 
+### 6.1 下一层：provider 自己的 GOT 槽被清成 0（确定性复现）
+
+capability 补丁之后，再开相机不再崩在 capability 上，改成：
+
+```
+signal 11 (SIGSEGV), fault addr 0x0
+#00 pc 00000000  <unknown>
+#01 pc 00026707  /vendor/lib/libispalg.so (ae_sprd_io_ctrl+1654)
+#02 pc 0004cf3e  [anon:scudo:primary]
+```
+
+`ae_sprd_io_ctrl+1654` = 0x26706，那条指令是走 PLT 的 `blx pthread_mutex_unlock`
+（`sym.imp.pthread_mutex_unlock`）。`pthread_mutex_unlock` 是 libc 的普通符号，
+不可能解析失败，所以**这个 GOT 槽在运行时是被写成 0 的**。连跑两次，崩点、
+帧、故障地址完全一致——**确定性**，不是随机踩。
+
+这条线索比之前"若干无关进程随机崩"窄得多：**踩内存首先发生在 provider 自己
+的进程内**（它的 GOT / scudo anon 页），之后才是 systemui/cameraserver 那一批。
+换句话说，ISP 往"自己的客户进程"的内存里写了东西——这跟前面观察到的
+"受害者都是刚启动、刚加载库的进程"是同一件事的两种表现。
+
 两处 libispalg 补丁（`libispalg_a9fix2.so`，md5 `da735787`）：
 
 | 地址 | 原 | 改 | 原因 |

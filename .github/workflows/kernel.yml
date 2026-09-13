@@ -72,6 +72,19 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    # ccache：跨 run 复用目标文件。NOHASHDIR 忽略绝对路径，HARDLINK+NOCOMPRESS
+    # 让命中几乎是瞬时的（压缩缓存每次命中都要 zstd 解压，实测多花 ~80s）。
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_MAXSIZE: 4G
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_NOCOMPRESS: "true"
+      # 内核构建每次都会重新生成 include/generated/* 和 .config 派生的头，
+      # mtime / ctime 一变 direct mode 的 manifest 就整体失效（实测命中率 1%）。
+      CCACHE_SLOPPINESS: "time_macros,include_file_mtime,include_file_ctime,file_stat_matches"
+      # 别用 mtime 给编译器做指纹：toolchain 每次是新 clone 的
+      CCACHE_COMPILERCHECK: "content"
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +92,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
-              cpio kmod python3 xz-utils
+              cpio kmod python3 xz-utils ccache
           if [ "${{ inputs.toolchain }}" = "distro" ]; then
             sudo apt-get install -y -qq gcc-aarch64-linux-gnu
             aarch64-linux-gnu-gcc --version | head -1
@@ -153,6 +166,25 @@ jobs:
           fi
           (cd kernel && git status 2>&1 | head -1) || true
 
+      # 缓存键只绑 仓库+分支+配置：改 workflow 不会把缓存打掉
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-
+            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-
+
+      - name: Setup ccache
+        run: |
+          ccache --version | head -1
+          mkdir -p ~/.ccache
+          ccache -M 4G
+          ccache -z
+          ccache -p | grep -E "cache_dir|max_size" || true
+
       - name: Configure
         run: |
           export PATH="$TOOLCHAIN:$PATH"
@@ -164,7 +196,7 @@ jobs:
             test -f "arch/arm64/configs/$DEFCONFIG" || {
               echo "!! 仓库里没有 arch/arm64/configs/$DEFCONFIG"; ls arch/arm64/configs; exit 1; }
             echo "用仓库自带 defconfig: $DEFCONFIG"
-            make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG "$DEFCONFIG"
+            make ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG "$DEFCONFIG"
           else
             echo "用提取的 config: ${{ inputs.config_file }}"
             test -f "$GITHUB_WORKSPACE/${{ inputs.config_file }}" || {
@@ -178,10 +210,10 @@ jobs:
             # 保留 .git 时用它抵消 setlocalversion 追加的 -g<sha> / -dirty
             printf '\nCONFIG_LOCALVERSION=""\n# CONFIG_LOCALVERSION_AUTO is not set\n' >> .config
           fi
-          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG olddefconfig
+          make ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG olddefconfig
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION=|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES=|USB_CONFIGFS|F2FS_FS=|EROFS_FS)" .config || true
-          REL=$(make -s ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG kernelrelease)
+          REL=$(make -s ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG kernelrelease)
           echo "kernelrelease = '$REL'（要编出不含 -g<sha> / 加号的干净版本串）"
           # 用提取出来的 config 时，顺手报告这棵树丢了多少符号
           if [ -n "${{ inputs.config_file }}" ] && [ -z "$DEFCONFIG" ]; then
@@ -200,7 +232,7 @@ jobs:
           CROSS32_ARG=""
           if [ -n "$CROSS32" ]; then CROSS32_ARG="CROSS_COMPILE_ARM32=$CROSS32"; fi
           echo "开始编译 $(date -u +%H:%M:%S)，$(nproc) 并发"
-          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
+          make ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG \
                -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build-image.log"
           echo "编译结束 $(date -u +%H:%M:%S)"
           ls -la arch/arm64/boot/Image
@@ -215,12 +247,12 @@ jobs:
           if [ -n "$CROSS32" ]; then CROSS32_ARG="CROSS_COMPILE_ARM32=$CROSS32"; fi
           set +e
           echo "开始编模块 $(date -u +%H:%M:%S)"
-          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
+          make ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG \
                -j"$(nproc)" modules 2>&1 | tee "$GITHUB_WORKSPACE/build-modules.log"
           echo "modules build exit: $?"
           echo "模块编译结束 $(date -u +%H:%M:%S)"
           rm -rf "$GITHUB_WORKSPACE/inst"
-          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
+          make ARCH=arm64 CROSS_COMPILE="ccache $CROSS" $CROSS32_ARG \
                modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst"
           mkdir -p "$GITHUB_WORKSPACE/mods/lib/modules"
           for m in mali.ko sprdwl_ng.ko sprdbt_tty.ko sprd_fm.ko; do
@@ -288,3 +320,22 @@ jobs:
             build-image.log
             build-modules.log
           if-no-files-found: error
+
+      - name: ccache stats
+        if: always()
+        run: |
+          ccache -s || true
+          {
+            echo "## ccache 统计"
+            echo ""
+            echo '```'
+            ccache -s || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}

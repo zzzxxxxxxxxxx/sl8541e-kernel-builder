@@ -166,6 +166,16 @@ jobs:
           fi
           (cd kernel && git status 2>&1 | head -1) || true
 
+      # 仓库自带的补丁（不属于内核仓库本身，例如"强制忽略模块版本校验"）
+      - name: Apply local kernel patches
+        run: |
+          for p in "$GITHUB_WORKSPACE"/patches/*.patch; do
+            [ -f "$p" ] || continue
+            echo "::group::本地补丁 $(basename "$p")"
+            (cd kernel && patch -p1 -N --fuzz=3 -r - < "$p")
+            echo "::endgroup::"
+          done
+
       # 缓存键只绑 仓库+分支+配置：改 workflow 不会把缓存打掉
       - name: Restore ccache
         uses: actions/cache/restore@v4

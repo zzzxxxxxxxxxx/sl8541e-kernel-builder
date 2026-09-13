@@ -1,0 +1,12 @@
+--- a/kernel/module.c	2026-09-13 05:05:03.982968152 +0000
++++ b/kernel/module.c	2026-09-13 05:05:03.982968152 +0000
+@@ -3484,6 +3484,9 @@
+ 	if (err)
+ 		goto free_copy;
+ 
++	/* DW99: load stock modules even if vermagic/modversions differ. */
++	flags |= MODULE_INIT_IGNORE_VERMAGIC | MODULE_INIT_IGNORE_MODVERSIONS;
++
+ 	/* Figure out module layout, and allocate all the memory. */
+ 	mod = layout_and_allocate(info, flags);
+ 	if (IS_ERR(mod)) {

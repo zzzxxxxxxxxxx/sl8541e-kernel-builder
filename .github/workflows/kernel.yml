@@ -181,11 +181,12 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
+          # key 里不再带 repo/config：换树、换配置也能复用同一份 ccache。
+          # ccache 是按内容（预处理后的源 + 编译器指纹）寻址的，命中不会串味；
+          # 配置变了只是大部分对象 miss（autoconf.h 参与预处理），不会编译出错。
+          key: ccache-${{ runner.os }}-kernel-${{ github.run_id }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-
+            ccache-${{ runner.os }}-kernel-
 
       - name: Setup ccache
         run: |
@@ -348,4 +349,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
+          key: ccache-${{ runner.os }}-kernel-${{ github.run_id }}

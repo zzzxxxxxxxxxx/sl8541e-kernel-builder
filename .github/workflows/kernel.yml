@@ -40,6 +40,14 @@ on:
         description: "是否编模块（失败不阻断，只是 .ko 会退回原厂那份）"
         required: false
         default: "true"
+      ksu_ref:
+        description: "KernelSU 子模块 checkout 的 ref（留空 = origin/main；树自带的补丁对不上 main 时要钉住）"
+        required: false
+        default: ""
+      toolchain:
+        description: "aosp49 = AOSP GCC 4.9（原厂 ABI 那条）；distro = 发行版 aarch64-linux-gnu-gcc（Watch-GKI 那种用新 GCC 编的树）"
+        required: false
+        default: "aosp49"
       dt_url:
         description: "替换 dt 的下载地址（留空 = 用 prebuilt/dt.bin）"
         required: false
@@ -64,19 +72,6 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 300
-    # ccache：跨 run 复用目标文件。NOHASHDIR 忽略绝对路径，HARDLINK+NOCOMPRESS
-    # 让命中几乎是瞬时的（压缩缓存每次命中都要 zstd 解压，实测多花 ~80s）。
-    env:
-      CCACHE_DIR: /home/runner/.ccache
-      CCACHE_MAXSIZE: 4G
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-      CCACHE_NOCOMPRESS: "true"
-      # 内核构建每次都会重新生成 include/generated/* 和 .config 派生的头，
-      # mtime / ctime 一变 direct mode 的 manifest 就整体失效（实测命中率 1%）。
-      CCACHE_SLOPPINESS: "time_macros,include_file_mtime,include_file_ctime,file_stat_matches"
-      # 别用 mtime 给编译器做指纹：toolchain 每次是新 clone 的
-      CCACHE_COMPILERCHECK: "content"
     steps:
       - uses: actions/checkout@v4
 
@@ -84,9 +79,19 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev \
-              cpio kmod python3 xz-utils ccache
+              cpio kmod python3 xz-utils
+          if [ "${{ inputs.toolchain }}" = "distro" ]; then
+            sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+            aarch64-linux-gnu-gcc --version | head -1
+            echo "CROSS=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+            echo "CROSS32=" >> "$GITHUB_ENV"
+          else
+            echo "CROSS=aarch64-linux-android-" >> "$GITHUB_ENV"
+            echo "CROSS32=arm-linux-androideabi-" >> "$GITHUB_ENV"
+          fi
 
       - name: Fetch AOSP 4.9 toolchain (设备内核就是用这个编的)
+        if: inputs.toolchain != 'distro'
         run: |
           git clone --depth 1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
@@ -99,44 +104,67 @@ jobs:
       - name: Clone kernel
         run: |
           git clone --depth 1 -b "${{ inputs.kernel_branch }}" \
+            --recurse-submodules --shallow-submodules \
             "https://github.com/${{ inputs.kernel_repo }}.git" kernel
           du -sh kernel
+          # 有些树（Watch-GKI）把 KernelSU/ReSukiSU 放成子模块，并自带适配补丁。
+          # 补丁是按子模块某个 main 提交写的（不是按 gitlink），所以要先把子模块切到
+          # ksu_ref（留空 = origin/main），同时补全历史——ReSukiSU 的 Kbuild 用
+          # `git rev-list --count HEAD` 算版本号。
+          if [ -d kernel/KernelSU/.git ] || [ -f kernel/KernelSU/.git ]; then
+            echo "::group::更新 KernelSU 子模块"
+            git -C kernel/KernelSU fetch --unshallow origin 2>/dev/null || \
+              git -C kernel/KernelSU fetch origin
+            KSU_REF="${{ inputs.ksu_ref }}"
+            if [ -z "$KSU_REF" ]; then KSU_REF=origin/main; fi
+            git -C kernel/KernelSU fetch origin "$KSU_REF" 2>/dev/null || true
+            git -C kernel/KernelSU checkout --detach "$KSU_REF"
+            git -C kernel/KernelSU log -1 --format='ReSukiSU HEAD: %h %s'
+            echo "::endgroup::"
+          fi
+          if [ -d kernel/tools/patches ]; then
+            for p in "$PWD"/kernel/tools/patches/*.patch; do
+              [ -f "$p" ] || continue
+              echo "::group::应用仓库自带补丁 $(basename "$p")"
+              if [ -d kernel/KernelSU ]; then
+                (cd kernel/KernelSU && git apply --whitespace=nowarn -v "$p" || \
+                  patch -p1 -N --fuzz=3 -r - < "$p")
+              else
+                (cd kernel && git apply --whitespace=nowarn -v "$p" || \
+                  patch -p1 -N --fuzz=3 -r - < "$p")
+              fi
+              echo "::endgroup::"
+            done
+          fi
           # 把 .git 挪走：留着的话 scripts/setlocalversion 会给版本串加上 -g<sha>
           # （这条 defconfig 的 CONFIG_LOCALVERSION_AUTO=y），UTS_RELEASE 就不是
-          # 干净的 4.4.83 了，vermagic 和原厂模块对不上。
-          mv kernel/.git kernel/.git-off
+          # 干净的 4.4.x 了，vermagic 和原厂模块对不上。
+          # 但 KSU 子模块（ReSukiSU）的 Kbuild 要靠 ../.git 算版本号，有子模块时
+          # 只能保留 .git，改成在 Configure 里关掉 LOCALVERSION_AUTO。
+          if [ -f kernel/.gitmodules ]; then
+            echo "检测到子模块：保留 kernel/.git，构建时关闭 CONFIG_LOCALVERSION_AUTO"
+            echo "KEEP_GIT=1" >> "$GITHUB_ENV"
+            # 子模块被补丁改脏会让 scripts/setlocalversion 在版本串后面加 "+"，
+            # vermagic 就和 ramdisk 里的原厂 .ko（4.4.147）对不上了。
+            git -C kernel config diff.ignoreSubmodules dirty
+            git -C kernel config status.submoduleSummary false
+          else
+            mv kernel/.git kernel/.git-off
+          fi
           (cd kernel && git status 2>&1 | head -1) || true
-
-      # 缓存键只绑 仓库+分支+配置：改 workflow 不会把缓存打掉
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-
-            ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-
-
-      - name: Setup ccache
-        run: |
-          ccache --version | head -1
-          mkdir -p ~/.ccache
-          ccache -M 4G
-          ccache -z
-          ccache -p | grep -E "cache_dir|max_size" || true
 
       - name: Configure
         run: |
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
           DEFCONFIG="${{ inputs.defconfig }}"
+          CROSS32_ARG=""
+          if [ -n "$CROSS32" ]; then CROSS32_ARG="CROSS_COMPILE_ARM32=$CROSS32"; fi
           if [ -n "$DEFCONFIG" ]; then
             test -f "arch/arm64/configs/$DEFCONFIG" || {
               echo "!! 仓库里没有 arch/arm64/configs/$DEFCONFIG"; ls arch/arm64/configs; exit 1; }
             echo "用仓库自带 defconfig: $DEFCONFIG"
-            make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
-                 CROSS_COMPILE_ARM32=arm-linux-androideabi- "$DEFCONFIG"
+            make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG "$DEFCONFIG"
           else
             echo "用提取的 config: ${{ inputs.config_file }}"
             test -f "$GITHUB_WORKSPACE/${{ inputs.config_file }}" || {
@@ -146,11 +174,14 @@ jobs:
           if [ -n "${{ inputs.extra_config }}" ]; then
             printf '\n%s\n' "${{ inputs.extra_config }}" >> .config
           fi
-          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- olddefconfig
+          if [ -n "$KEEP_GIT" ]; then
+            # 保留 .git 时用它抵消 setlocalversion 追加的 -g<sha> / -dirty
+            printf '\nCONFIG_LOCALVERSION=""\n# CONFIG_LOCALVERSION_AUTO is not set\n' >> .config
+          fi
+          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG olddefconfig
           echo "--- 关键配置 ---"
           grep -E "^CONFIG_(LOCALVERSION=|PSTORE|PSTORE_CONSOLE|PSTORE_RAM|PSTORE_PMSG|BPF_SYSCALL|MODULES=|USB_CONFIGFS|F2FS_FS=|EROFS_FS)" .config || true
-          REL=$(make -s ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" kernelrelease)
+          REL=$(make -s ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG kernelrelease)
           echo "kernelrelease = '$REL'（要编出不含 -g<sha> / 加号的干净版本串）"
           # 用提取出来的 config 时，顺手报告这棵树丢了多少符号
           if [ -n "${{ inputs.config_file }}" ] && [ -z "$DEFCONFIG" ]; then
@@ -166,9 +197,10 @@ jobs:
           set -o pipefail
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
+          CROSS32_ARG=""
+          if [ -n "$CROSS32" ]; then CROSS32_ARG="CROSS_COMPILE_ARM32=$CROSS32"; fi
           echo "开始编译 $(date -u +%H:%M:%S)，$(nproc) 并发"
-          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
                -j"$(nproc)" Image 2>&1 | tee "$GITHUB_WORKSPACE/build-image.log"
           echo "编译结束 $(date -u +%H:%M:%S)"
           ls -la arch/arm64/boot/Image
@@ -179,16 +211,16 @@ jobs:
         run: |
           export PATH="$TOOLCHAIN:$PATH"
           cd kernel
+          CROSS32_ARG=""
+          if [ -n "$CROSS32" ]; then CROSS32_ARG="CROSS_COMPILE_ARM32=$CROSS32"; fi
           set +e
           echo "开始编模块 $(date -u +%H:%M:%S)"
-          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
                -j"$(nproc)" modules 2>&1 | tee "$GITHUB_WORKSPACE/build-modules.log"
           echo "modules build exit: $?"
           echo "模块编译结束 $(date -u +%H:%M:%S)"
           rm -rf "$GITHUB_WORKSPACE/inst"
-          make ARCH=arm64 CROSS_COMPILE="ccache aarch64-linux-android-" \
-               CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make ARCH=arm64 CROSS_COMPILE="$CROSS" $CROSS32_ARG \
                modules_install INSTALL_MOD_PATH="$GITHUB_WORKSPACE/inst"
           mkdir -p "$GITHUB_WORKSPACE/mods/lib/modules"
           for m in mali.ko sprdwl_ng.ko sprdbt_tty.ko sprd_fm.ko; do
@@ -256,22 +288,3 @@ jobs:
             build-image.log
             build-modules.log
           if-no-files-found: error
-
-      - name: ccache stats
-        if: always()
-        run: |
-          ccache -s || true
-          {
-            echo "## ccache 统计"
-            echo ""
-            echo '```'
-            ccache -s || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ inputs.kernel_repo }}-${{ inputs.kernel_branch }}-${{ inputs.config_file }}-${{ inputs.defconfig }}-${{ github.run_id }}
